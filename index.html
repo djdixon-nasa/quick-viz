@@ -50,7 +50,7 @@
   <label><input type="checkbox" id="show-ok" checked> Lidar tiles on the NAS (green, zoom in)</label>
   <label><input type="checkbox" id="show-download" checked> Lidar tiles to download (red, zoom in)</label>
   <label><input type="checkbox" id="show-flagged" checked> Flagged WERK tiles (white)</label>
-  <div class="about" id="tile-status">Tile outlines: zoom in to a city to see them</div>
+  <div class="about" id="tile-status">Tile outlines: zoom in to see them</div>
   <div id="raster-layers"></div>
   <label><input type="checkbox" id="show-naip" checked> NAIP 2022 imagery</label>
   <label><input type="checkbox" id="show-satellite" checked> Satellite (Esri)</label>
@@ -119,7 +119,7 @@
   const map = new ol.Map({
     target: "map",
     layers: [satellite, naip],
-    view: new ol.View({ center: ol.proj.fromLonLat([-120, 38]), zoom: 6 }),
+    view: new ol.View({ center: ol.proj.fromLonLat([-120, 38]), zoom: 7 }),
   });
   document.getElementById("show-satellite").onchange = (e) => satellite.setVisible(e.target.checked);
   document.getElementById("show-naip").onchange = (e) => naip.setVisible(e.target.checked);
