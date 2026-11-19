@@ -44,8 +44,10 @@
   <p class="about">Aboveground biomass over NAIP 2022 imagery. Click the map to read values.</p>
 
   <h2>Layers</h2>
+  <label><input type="checkbox" id="show-labels" checked> Roads and labels</label>
   <div id="raster-layers"></div>
   <label><input type="checkbox" id="show-naip" checked> NAIP 2022 imagery</label>
+  <label><input type="checkbox" id="show-satellite" checked> Satellite (Esri)</label>
 
   <h2>Value at click</h2>
   <div id="value">Click the map</div>
@@ -80,6 +82,18 @@
       scale: 0.1, min: 0, max: 400, units: "Mg/ha", nodata: -9999, opacity: 0.75 },
   ];
 
+  // the hybrid basemap: Esri world imagery under everything, Esri roads and place names over everything
+  const esri = (service) => new ol.source.XYZ({
+    url: `https://server.arcgisonline.com/ArcGIS/rest/services/${service}/MapServer/tile/{z}/{y}/{x}`,
+    attributions: "Basemap: Esri, Maxar, Earthstar Geographics",
+    maxZoom: 19,
+  });
+  const satellite = new ol.layer.Tile({ source: esri("World_Imagery") });
+  const labels = new ol.layer.Group({ layers: [
+    new ol.layer.Tile({ source: esri("Reference/World_Transportation") }),
+    new ol.layer.Tile({ source: esri("Reference/World_Boundaries_and_Places") }),
+  ] });
+
   // NAIP 2022, 0.6 m, from the CDFW image service
   const naip = new ol.layer.Tile({
     source: new ol.source.TileArcGISRest({
@@ -91,10 +105,12 @@
 
   const map = new ol.Map({
     target: "map",
-    layers: [naip],
+    layers: [satellite, naip],
     view: new ol.View({ center: ol.proj.fromLonLat([-120, 38]), zoom: 6 }),
   });
+  document.getElementById("show-satellite").onchange = (e) => satellite.setVisible(e.target.checked);
   document.getElementById("show-naip").onchange = (e) => naip.setVisible(e.target.checked);
+  document.getElementById("show-labels").onchange = (e) => labels.setVisible(e.target.checked);
 
   // a raster layer: viridis from min to max (in units); band 2 is the mask made from the nodata value
   function addRaster(r) {
@@ -128,6 +144,7 @@
     return layer;
   }
   const rasterLayers = RASTERS.map(addRaster);
+  map.addLayer(labels);  // added last so roads and names stay on top of the rasters
 
   // click: the value of each visible raster at that pixel
   const box = document.getElementById("value");
