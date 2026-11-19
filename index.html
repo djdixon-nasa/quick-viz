@@ -49,6 +49,7 @@
   <label><input type="checkbox" id="show-labels" checked> Roads and labels</label>
   <label><input type="checkbox" id="show-ok" checked> Lidar tiles on the NAS (green, zoom in)</label>
   <label><input type="checkbox" id="show-download" checked> Lidar tiles to download (red, zoom in)</label>
+  <div class="about" id="tile-status">Tile outlines: zoom in to a city to see them</div>
   <div id="raster-layers"></div>
   <label><input type="checkbox" id="show-naip" checked> NAIP 2022 imagery</label>
   <label><input type="checkbox" id="show-satellite" checked> Satellite (Esri)</label>
@@ -184,16 +185,18 @@
 
   const rasterLayers = RASTERS.map(addRaster);
   // the 3DEP lidar tiles: green = on the NAS, red = to download (missing, damaged or incomplete);
-  // outlines only; read from all_tiles.fgb for the area in view, from zoom 11 in
+  // outlines only; read from all_tiles.fgb for the area in view, from zoom 13 in
   const TILE_STYLES = [
     new ol.style.Style({ stroke: new ol.style.Stroke({ color: "#00b050", width: 1 }) }),
     new ol.style.Style({ stroke: new ol.style.Stroke({ color: "#e00000", width: 1.5 }) }),
   ];
   const showTiles = [true, true];  // [on the NAS, to download]
   const geojson = new ol.format.GeoJSON();
+  const tileStatus = document.getElementById("tile-status");
   const tileSource = new ol.source.Vector({
     strategy: ol.loadingstrategy.bbox,
     loader: async (extent, resolution, projection, success, failure) => {
+      tileStatus.textContent = "Tile outlines: loading...";
       const [minX, minY, maxX, maxY] = ol.proj.transformExtent(extent, projection, "EPSG:4326");
       const features = [];
       try {
@@ -204,16 +207,18 @@
         }
       } catch (err) {
         console.error(err);
+        tileStatus.textContent = `Tile outlines: failed to load (${err.message ?? err})`;
         failure();
         return;
       }
       tileSource.addFeatures(features);
+      tileStatus.textContent = `Tile outlines: ${tileSource.getFeatures().length} tiles loaded`;
       success(features);
     },
   });
   const tiles = new ol.layer.Vector({
     source: tileSource,
-    minZoom: 11,
+    minZoom: 13,
     style: (f) => (showTiles[f.get("todo")] ? TILE_STYLES[f.get("todo")] : null),
   });
   map.addLayer(tiles);
