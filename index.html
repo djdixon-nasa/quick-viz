@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CTrees Biomass Map</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10.10.0/ol.css">
+  <script src="https://cdn.jsdelivr.net/npm/ol@10.10.0/dist/ol.js"></script>
+  <style>
+    html, body { margin: 0; height: 100%; font: 14px/1.4 sans-serif; color: #222; }
+    body { display: flex; }
+    /* side panel on the left, map fills the rest; on a phone the panel sits above the map */
+    .side { width: 280px; flex: none; box-sizing: border-box; padding: 16px; overflow-y: auto;
+            background: #fff; border-right: 1px solid #ddd; }
+    #map { flex: 1; height: 100%; background: #eeeeee; position: relative; }
+    @media (max-width: 700px) {
+      body { flex-direction: column; }
+      .side { width: 100%; max-height: 40%; border-right: none; border-bottom: 1px solid #ddd; }
+      #map { height: auto; }
+    }
+    h1 { font-size: 18px; margin: 0 0 6px; }
+    .about { color: #555; font-size: 13px; margin: 0 0 16px; }
+    h2 { font-size: 13px; margin: 16px 0 6px; text-transform: uppercase; color: #666; letter-spacing: .04em; }
+    .bar { height: 10px; margin: 4px 0;
+           background: linear-gradient(to right, #440154, #3b528b, #21918c, #5ec962, #fde725); }
+    .ticks { display: flex; justify-content: space-between; font-size: 12px; }
+    .side label { display: block; margin: 4px 0; }
+    .side input[type=range] { width: 100%; }
+    #value { font-size: 15px; font-weight: bold; }
+  </style>
+</head>
+<body>
+<div class="side">
+  <h1>Aboveground biomass</h1>
+  <p class="about">CTrees 2020 biomass at 100 m over NAIP 2022 imagery. Click the map to read a value.</p>
+
+  <h2>Biomass (Mg/ha)</h2>
+  <div class="bar"></div>
+  <div class="ticks"><span>0</span><span>100</span><span>200</span><span>300</span><span>400+</span></div>
+
+  <h2>Layers</h2>
+  <label><input type="checkbox" id="show-ctrees" checked> CTrees biomass</label>
+  <label><input type="checkbox" id="show-naip" checked> NAIP 2022 imagery</label>
+  <label>Biomass opacity <input id="opacity" type="range" min="0" max="1" step="0.05" value="0.75"></label>
+
+  <h2>Value at click</h2>
+  <div id="value">Click the map</div>
+</div>
+<div id="map"></div>
+<script>
+  // CTrees 2020 biomass: one global COG on AWS, read by the browser in pieces; values are Mg/ha x 10, -9999 = no data
+  const COG = "https://ctrees-agb-100m-global.s3.us-west-2.amazonaws.com/cogs/" +
+              "global_agb_100m_landsat0024_all_2020_densenet_l1_agb_mosaic_100m_base_cd_ts.tif";
+  // NAIP 2022, 0.6 m, from the CDFW image service
+  const NAIP = "https://gis.wildlife.ca.gov/images/rest/services/Base_Remote_Sensing/NAIP_2022/ImageServer";
+
+  const naip = new ol.layer.Tile({
+    source: new ol.source.TileArcGISRest({
+      url: NAIP,
+      params: { FORMAT: "jpgpng" },
+      attributions: "NAIP 2022, CDFW",
+    }),
+  });
+
+  // viridis from 0 to 400 Mg/ha; band 2 is the mask the source makes from the nodata value
+  const viridis = ["interpolate", ["linear"], ["band", 1],
+    0, [68, 1, 84, 1], 1000, [59, 82, 139, 1], 2000, [33, 145, 140, 1],
+    3000, [94, 201, 98, 1], 4000, [253, 231, 37, 1]];
+  const ctrees = new ol.layer.WebGLTile({
+    opacity: 0.75,
+    source: new ol.source.GeoTIFF({
+      sources: [{ url: COG, nodata: -9999 }],
+      normalize: false,
+      attributions: "CTrees",
+    }),
+    style: { color: ["case", ["==", ["band", 2], 0], [0, 0, 0, 0], viridis] },
+  });
+
+  const map = new ol.Map({
+    target: "map",
+    layers: [naip, ctrees],
+    view: new ol.View({ center: ol.proj.fromLonLat([-120, 38]), zoom: 6 }),
+  });
+
+  // layer checkboxes and the opacity slider
+  document.getElementById("show-ctrees").onchange = (e) => ctrees.setVisible(e.target.checked);
+  document.getElementById("show-naip").onchange = (e) => naip.setVisible(e.target.checked);
+  document.getElementById("opacity").oninput = (e) => ctrees.setOpacity(Number(e.target.value));
+
+  // click: the biomass value of the pixel under the cursor
+  const box = document.getElementById("value");
+  map.on("singleclick", (e) => {
+    const d = ctrees.getData(e.pixel);
+    box.textContent = !d || d[1] === 0 ? "no data" : `${(d[0] / 10).toFixed(1)} Mg/ha`;
+  });
+</script>
+</body>
+</html>
