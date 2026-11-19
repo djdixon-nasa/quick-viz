@@ -3,98 +3,235 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CTrees Biomass Map</title>
+  <title>AGB App</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10.10.0/ol.css">
-  <!-- the GeoTIFF reader: the OpenLayers browser build does not include it -->
+  <!-- the GeoTIFF reader and projections: the OpenLayers browser build does not include them -->
   <script src="https://cdn.jsdelivr.net/npm/geotiff@3.1.0-beta.0/dist-browser/geotiff.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/proj4@2.12.1/dist/proj4.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/ol@10.10.0/dist/ol.js"></script>
   <style>
     html, body { margin: 0; height: 100%; font: 14px/1.4 sans-serif; color: #222; }
     body { display: flex; }
-    /* side panel on the left, map fills the rest; on a phone the panel sits above the map */
-    .side { width: 280px; flex: none; box-sizing: border-box; padding: 16px; overflow-y: auto;
-            background: #fff; border-right: 1px solid #ddd; }
+    /* side panel on the left, a handle to drag its width, the map fills the rest */
+    .side { width: 300px; min-width: 180px; max-width: 70vw; flex: none; box-sizing: border-box;
+            padding: 16px; overflow-y: auto; background: #fff; }
+    .handle { width: 6px; flex: none; cursor: col-resize; background: #ddd; }
+    .handle:hover, .handle.dragging { background: #999; }
     #map { flex: 1; height: 100%; background: #eeeeee; position: relative; }
     @media (max-width: 700px) {
       body { flex-direction: column; }
-      .side { width: 100%; max-height: 40%; border-right: none; border-bottom: 1px solid #ddd; }
+      .side { width: 100% !important; max-width: none; max-height: 40%; border-bottom: 1px solid #ddd; }
+      .handle { display: none; }
       #map { height: auto; }
     }
     h1 { font-size: 18px; margin: 0 0 6px; }
-    .about { color: #555; font-size: 13px; margin: 0 0 16px; }
+    .about { color: #555; font-size: 13px; margin: 0 0 12px; }
     h2 { font-size: 13px; margin: 16px 0 6px; text-transform: uppercase; color: #666; letter-spacing: .04em; }
-    .bar { height: 10px; margin: 4px 0;
+    .raster { margin: 8px 0 12px; }
+    .bar { height: 10px; margin: 4px 0 2px;
            background: linear-gradient(to right, #440154, #3b528b, #21918c, #5ec962, #fde725); }
-    .ticks { display: flex; justify-content: space-between; font-size: 12px; }
+    .ticks { display: flex; justify-content: space-between; font-size: 11px; color: #555; }
     .side label { display: block; margin: 4px 0; }
     .side input[type=range] { width: 100%; }
-    #value { font-size: 15px; font-weight: bold; }
+    .swatch { display: inline-block; width: 10px; height: 10px; margin-right: 4px; border: 2px solid; }
+    .hint { color: #777; font-size: 12px; }
+    #value { font-size: 13px; }
+    #value div { margin: 2px 0; }
+    #value b { font-size: 15px; }
+    #attributes { font-size: 12px; margin-top: 6px; overflow-wrap: anywhere; }
+    #attributes table { border-collapse: collapse; width: 100%; }
+    #attributes td { border-top: 1px solid #eee; padding: 2px 4px; vertical-align: top; }
+    #attributes td:first-child { color: #666; }
   </style>
 </head>
 <body>
-<div class="side">
-  <h1>Aboveground biomass</h1>
-  <p class="about">CTrees 2020 biomass at 100 m over NAIP 2022 imagery. Click the map to read a value.</p>
-
-  <h2>Biomass (Mg/ha)</h2>
-  <div class="bar"></div>
-  <div class="ticks"><span>0</span><span>100</span><span>200</span><span>300</span><span>400+</span></div>
+<div class="side" id="side">
+  <h1>AGB App</h1>
+  <p class="about">Aboveground biomass over NAIP 2022 imagery. Click the map to read values.</p>
 
   <h2>Layers</h2>
-  <label><input type="checkbox" id="show-ctrees" checked> CTrees biomass</label>
+  <div id="raster-layers"></div>
+  <div id="vector-toggles"></div>
   <label><input type="checkbox" id="show-naip" checked> NAIP 2022 imagery</label>
-  <label>Biomass opacity <input id="opacity" type="range" min="0" max="1" step="0.05" value="0.75"></label>
+  <p class="hint">Drop a GeoJSON or KML file on the map to show it here.</p>
 
   <h2>Value at click</h2>
   <div id="value">Click the map</div>
+  <div id="attributes"></div>
+
+  <h2>About the data</h2>
+  <p class="about">CTrees biomass data are stored as Cloud Optimized GeoTIFFs (COGs) on AWS. The map reads
+    only the parts it needs, straight from the bucket. To add more data, put it on an AWS S3 bucket as a COG
+    and add one line to the page.</p>
 </div>
+<div class="handle" id="handle" title="Drag to resize"></div>
 <div id="map"></div>
 <script>
-  // CTrees 2020 biomass: one global COG on AWS, read by the browser in pieces; values are Mg/ha x 10, -9999 = no data
-  const COG = "https://ctrees-agb-100m-global.s3.us-west-2.amazonaws.com/cogs/" +
-              "global_agb_100m_landsat0024_all_2020_densenet_l1_agb_mosaic_100m_base_cd_ts.tif";
-  // NAIP 2022, 0.6 m, from the CDFW image service
-  const NAIP = "https://gis.wildlife.ca.gov/images/rest/services/Base_Remote_Sensing/NAIP_2022/ImageServer";
+  // projections the rasters may use, besides lat/long (4326) and web mercator (3857)
+  proj4.defs("EPSG:3310", "+proj=aea +lat_0=0 +lon_0=-120 +lat_1=34 +lat_2=40.5 +x_0=0 +y_0=-4000000 " +
+                          "+ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs");
+  proj4.defs("EPSG:5070", "+proj=aea +lat_0=23 +lon_0=-96 +lat_1=29.5 +lat_2=45.5 +x_0=0 +y_0=0 " +
+                          "+ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs");
+  proj4.defs("EPSG:26910", "+proj=utm +zone=10 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs");
+  proj4.defs("EPSG:26911", "+proj=utm +zone=11 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs");
+  ol.proj.proj4.register(proj4);
 
+  // raster layers: COGs on S3 (or any url that allows range requests from other sites).
+  //   url        the COG's https url
+  //   scale      multiply the stored value by this to get the value in units
+  //   min, max   the color range, in units
+  //   nodata     the stored no-data value
+  // To add one: put the COG on S3 and add a line here.
+  const RASTERS = [
+    { name: "CTrees biomass 2020 (100 m)",
+      url: "https://ctrees-agb-100m-global.s3.us-west-2.amazonaws.com/cogs/" +
+           "global_agb_100m_landsat0024_all_2020_densenet_l1_agb_mosaic_100m_base_cd_ts.tif",
+      scale: 0.1, min: 0, max: 400, units: "Mg/ha", nodata: -9999, opacity: 0.75 },
+  ];
+
+  // vector layers: GeoJSON files in the repo next to this page (or any url that allows other sites).
+  // Each gets a checkbox; clicking a feature shows its attributes. For example:
+  //   { name: "Field plots", url: "plots.geojson", color: "#e31a1c" },
+  const VECTORS = [
+  ];
+
+  // NAIP 2022, 0.6 m, from the CDFW image service
   const naip = new ol.layer.Tile({
     source: new ol.source.TileArcGISRest({
-      url: NAIP,
+      url: "https://gis.wildlife.ca.gov/images/rest/services/Base_Remote_Sensing/NAIP_2022/ImageServer",
       params: { FORMAT: "jpgpng" },
       attributions: "NAIP 2022, CDFW",
     }),
   });
 
-  // viridis from 0 to 400 Mg/ha; band 2 is the mask the source makes from the nodata value
-  const viridis = ["interpolate", ["linear"], ["band", 1],
-    0, [68, 1, 84, 1], 1000, [59, 82, 139, 1], 2000, [33, 145, 140, 1],
-    3000, [94, 201, 98, 1], 4000, [253, 231, 37, 1]];
-  const ctrees = new ol.layer.WebGLTile({
-    opacity: 0.75,
-    source: new ol.source.GeoTIFF({
-      sources: [{ url: COG, nodata: -9999 }],
-      normalize: false,
-      attributions: "CTrees",
-    }),
-    style: { color: ["case", ["==", ["band", 2], 0], [0, 0, 0, 0], viridis] },
-  });
-
   const map = new ol.Map({
     target: "map",
-    layers: [naip, ctrees],
+    layers: [naip],
     view: new ol.View({ center: ol.proj.fromLonLat([-120, 38]), zoom: 6 }),
   });
-
-  // layer checkboxes and the opacity slider
-  document.getElementById("show-ctrees").onchange = (e) => ctrees.setVisible(e.target.checked);
   document.getElementById("show-naip").onchange = (e) => naip.setVisible(e.target.checked);
-  document.getElementById("opacity").oninput = (e) => ctrees.setOpacity(Number(e.target.value));
 
-  // click: the biomass value of the pixel under the cursor
-  const box = document.getElementById("value");
-  map.on("singleclick", (e) => {
-    const d = ctrees.getData(e.pixel);
-    box.textContent = !d || d[1] === 0 ? "no data" : `${(d[0] / 10).toFixed(1)} Mg/ha`;
+  // a raster layer: viridis from min to max (in units); band 2 is the mask made from the nodata value
+  function addRaster(r) {
+    const lo = r.min / r.scale, hi = r.max / r.scale, step = (hi - lo) / 4;
+    const viridis = ["interpolate", ["linear"], ["band", 1],
+      lo, [68, 1, 84, 1], lo + step, [59, 82, 139, 1], lo + 2 * step, [33, 145, 140, 1],
+      lo + 3 * step, [94, 201, 98, 1], hi, [253, 231, 37, 1]];
+    const layer = new ol.layer.WebGLTile({
+      opacity: r.opacity ?? 0.75,
+      source: new ol.source.GeoTIFF({
+        sources: [{ url: r.url, nodata: r.nodata }],
+        normalize: false,
+        interpolate: false,  // show the pixels as they are, not blended
+      }),
+      style: { color: ["case", ["==", ["band", 2], 0], [0, 0, 0, 0], viridis] },
+    });
+    layer.set("raster", r);
+    map.addLayer(layer);
+
+    // its checkbox, color bar and opacity slider in the panel
+    const div = document.createElement("div");
+    div.className = "raster";
+    const ticks = [0, 1, 2, 3, 4].map((i) => `<span>${+(r.min + (i * (r.max - r.min)) / 4).toFixed(1)}</span>`);
+    div.innerHTML = `<label><input type="checkbox" checked> </label>
+      <div class="bar"></div><div class="ticks">${ticks.join("")}</div>
+      <label>Opacity <input type="range" min="0" max="1" step="0.05" value="${layer.getOpacity()}"></label>`;
+    div.querySelector("label").append(`${r.name} (${r.units})`);
+    div.querySelector("input[type=checkbox]").onchange = (e) => layer.setVisible(e.target.checked);
+    div.querySelector("input[type=range]").oninput = (e) => layer.setOpacity(Number(e.target.value));
+    document.getElementById("raster-layers").append(div);
+    return layer;
+  }
+  const rasterLayers = RASTERS.map(addRaster);
+
+  // an outline and light fill in one color, for points, lines and polygons
+  function vectorStyle(color) {
+    return new ol.style.Style({
+      stroke: new ol.style.Stroke({ color, width: 2 }),
+      fill: new ol.style.Fill({ color: color + "33" }),
+      image: new ol.style.Circle({ radius: 5, fill: new ol.style.Fill({ color }),
+                                   stroke: new ol.style.Stroke({ color: "#fff", width: 1 }) }),
+    });
+  }
+
+  // a vector layer on top of the others, with its own checkbox
+  const vectorLayers = [];
+  function addVector(name, source, color) {
+    const layer = new ol.layer.Vector({ source, style: vectorStyle(color) });
+    layer.set("name", name);
+    map.addLayer(layer);
+    vectorLayers.push(layer);
+    const label = document.createElement("label");
+    label.innerHTML = `<input type="checkbox" checked> <span class="swatch" style="border-color:${color}"></span>`;
+    label.append(name);
+    label.querySelector("input").onchange = (e) => layer.setVisible(e.target.checked);
+    document.getElementById("vector-toggles").append(label);
+    return layer;
+  }
+  for (const v of VECTORS) {
+    addVector(v.name, new ol.source.Vector({ url: v.url, format: new ol.format.GeoJSON() }), v.color || "#e31a1c");
+  }
+
+  // files dropped on the map: shown only in this browser, nothing is uploaded
+  const dropColors = ["#ff7f00", "#e7298a", "#1f78b4", "#33a02c", "#6a3d9a"];
+  const drop = new ol.interaction.DragAndDrop({ formatConstructors: [ol.format.GeoJSON, ol.format.KML, ol.format.GPX] });
+  drop.on("addfeatures", (e) => {
+    const source = new ol.source.Vector({ features: e.features });
+    addVector(e.file.name, source, dropColors[vectorLayers.length % dropColors.length]);
+    map.getView().fit(source.getExtent(), { padding: [40, 40, 40, 40], maxZoom: 14 });
   });
+  map.addInteraction(drop);
+
+  // click: the value of each visible raster at that pixel, and the attributes of a vector feature there
+  const box = document.getElementById("value");
+  const attrs = document.getElementById("attributes");
+  map.on("singleclick", (e) => {
+    box.replaceChildren();
+    for (const layer of rasterLayers) {
+      if (!layer.getVisible()) continue;
+      const r = layer.get("raster");
+      const d = layer.getData(e.pixel);
+      const line = document.createElement("div");
+      line.textContent = `${r.name}: `;
+      const b = document.createElement("b");
+      b.textContent = !d || d[1] === 0 ? "no data" : `${+(d[0] * r.scale).toFixed(1)} ${r.units}`;
+      line.append(b);
+      box.append(line);
+    }
+    attrs.replaceChildren();
+    map.forEachFeatureAtPixel(e.pixel, (feature, layer) => {
+      const table = document.createElement("table");
+      const head = table.insertRow().insertCell();
+      head.colSpan = 2;
+      head.textContent = layer.get("name");
+      head.style.fontWeight = "bold";
+      for (const [k, val] of Object.entries(feature.getProperties())) {
+        if (k === feature.getGeometryName()) continue;
+        const row = table.insertRow();
+        row.insertCell().textContent = k;
+        row.insertCell().textContent = val;
+      }
+      attrs.append(table);
+      return true;  // the top feature only
+    }, { layerFilter: (layer) => vectorLayers.includes(layer) });
+  });
+
+  // drag the handle to change the panel width; the map is resized to fill what is left
+  const side = document.getElementById("side");
+  const handle = document.getElementById("handle");
+  handle.addEventListener("pointerdown", (e) => {
+    handle.setPointerCapture(e.pointerId);
+    handle.classList.add("dragging");
+    const move = (m) => { side.style.width = `${m.clientX}px`; };
+    const up = () => {
+      handle.classList.remove("dragging");
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+  });
+  new ResizeObserver(() => map.updateSize()).observe(document.getElementById("map"));
 </script>
 </body>
 </html>
