@@ -8,6 +8,8 @@
   <!-- the GeoTIFF reader and projections: the OpenLayers browser build does not include them -->
   <script src="https://cdn.jsdelivr.net/npm/geotiff@3.1.0-beta.0/dist-browser/geotiff.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/proj4@2.12.1/dist/proj4.js"></script>
+  <!-- reads the tiles in view from a FlatGeobuf file, by range requests like the COGs -->
+  <script src="https://cdn.jsdelivr.net/npm/flatgeobuf@4.4.0/dist/flatgeobuf-geojson.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/ol@10.10.0/dist/ol.js"></script>
   <style>
     html, body { margin: 0; height: 100%; font: 14px/1.4 sans-serif; color: #222; }
@@ -45,6 +47,8 @@
 
   <h2>Layers</h2>
   <label><input type="checkbox" id="show-labels" checked> Roads and labels</label>
+  <label><input type="checkbox" id="show-ok" checked> Lidar tiles on the NAS (green, zoom in)</label>
+  <label><input type="checkbox" id="show-download" checked> Lidar tiles to download (red, zoom in)</label>
   <div id="raster-layers"></div>
   <label><input type="checkbox" id="show-naip" checked> NAIP 2022 imagery</label>
   <label><input type="checkbox" id="show-satellite" checked> Satellite (Esri)</label>
@@ -53,13 +57,18 @@
   <div id="value">Click the map</div>
 
   <h2>About the data</h2>
-  <p class="about">CTrees biomass data are stored as Cloud Optimized GeoTIFFs (COGs) on AWS. The map reads
-    only the parts it needs, straight from the bucket. To add more data, put it on an AWS S3 bucket as a COG
-    and add one line to the page.</p>
+  <p class="about">This is an example of visualizing CTrees biomass data, which are stored as Cloud Optimized
+    GeoTIFFs (COGs) on an AWS S3 bucket. There is no server: the map reads only the parts of the files it
+    needs, straight from the bucket. Hosting data this way costs S3 storage, plus a small charge for the data
+    viewers download. To add more data, put it on an S3 bucket as a COG and add one line to the page.</p>
 </div>
 <div class="handle" id="handle" title="Drag to resize"></div>
 <div id="map"></div>
 <script>
+  // where the lidar tiles (nDSM/) and all_tiles.fgb are: "" = next to this page (the Mac),
+  // or a Hugging Face dataset, "https://huggingface.co/datasets/<user>/<dataset>/resolve/main/"
+  const DATA = "https://huggingface.co/datasets/djdixon2/agb-app-data/resolve/main/";
+
   // projections the rasters may use, besides lat/long (4326) and web mercator (3857)
   proj4.defs("EPSG:3310", "+proj=aea +lat_0=0 +lon_0=-120 +lat_1=34 +lat_2=40.5 +x_0=0 +y_0=-4000000 " +
                           "+ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs");
@@ -69,17 +78,23 @@
   proj4.defs("EPSG:26911", "+proj=utm +zone=11 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs");
   ol.proj.proj4.register(proj4);
 
-  // raster layers: COGs on S3 (or any url that allows range requests from other sites).
-  //   url        the COG's https url
-  //   scale      multiply the stored value by this to get the value in units
-  //   min, max   the color range, in units
-  //   nodata     the stored no-data value
-  // To add one: put the COG on S3 and add a line here.
+  // raster layers: COGs on S3, or files next to this page (any url that allows range requests).
+  //   url            the COG's url, or its file name in this folder
+  //   scale, offset  value in units = stored value x scale + offset
+  //   min, max       the color range, in units
+  //   nodata         the stored no-data value
+  //   colors         five colors from min to max (viridis if left out)
+  //   visible        false to start with the layer off
   const RASTERS = [
     { name: "Biomass 2020 (100 m)",
       url: "https://ctrees-agb-100m-global.s3.us-west-2.amazonaws.com/cogs/" +
            "global_agb_100m_landsat0024_all_2020_densenet_l1_agb_mosaic_100m_base_cd_ts.tif",
       scale: 0.1, min: 0, max: 400, units: "Mg/ha", nodata: -9999, opacity: 0.75 },
+    // WERK lidar canopy and building height (nDSM), 2013-2023, ORNL DAAC doi:10.3334/ORNLDAAC/2523;
+    // 3 m, the tallest 1 m pixel in each 3 x 3 block; stored in 0.5 m steps, 255 = no data
+    // 488 tiles, one COG each; tiles.json lists each tile's url and extent (EPSG:3310)
+    { name: "Height above ground, lidar (3 m, zoom in)", tiles: "tiles.json", minZoom: 8,
+      scale: 0.5, min: 0, max: 60, units: "m", nodata: 255, opacity: 0.85 },
   ];
 
   // the hybrid basemap: Esri world imagery under everything, Esri roads and place names over everything
@@ -112,21 +127,27 @@
   document.getElementById("show-naip").onchange = (e) => naip.setVisible(e.target.checked);
   document.getElementById("show-labels").onchange = (e) => labels.setVisible(e.target.checked);
 
-  // a raster layer: viridis from min to max (in units); band 2 is the mask made from the nodata value
+  // a raster layer: its colors from min to max (in units); band 2 is the mask made from the nodata value
+  const VIRIDIS = [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]];
   function addRaster(r) {
-    const lo = r.min / r.scale, hi = r.max / r.scale, step = (hi - lo) / 4;
-    const viridis = ["interpolate", ["linear"], ["band", 1],
-      lo, [68, 1, 84, 1], lo + step, [59, 82, 139, 1], lo + 2 * step, [33, 145, 140, 1],
-      lo + 3 * step, [94, 201, 98, 1], hi, [253, 231, 37, 1]];
-    const layer = new ol.layer.WebGLTile({
-      opacity: r.opacity ?? 0.75,
+    const offset = r.offset ?? 0, colors = r.colors ?? VIRIDIS;
+    const lo = (r.min - offset) / r.scale, hi = (r.max - offset) / r.scale;
+    const ramp = ["interpolate", ["linear"], ["band", 1]];
+    colors.forEach((c, i) => ramp.push(lo + (i * (hi - lo)) / (colors.length - 1), [...c, 1]));
+    const cog = (url, extent) => new ol.layer.WebGLTile({
+      extent,
       source: new ol.source.GeoTIFF({
-        sources: [{ url: r.url, nodata: r.nodata }],
+        sources: [{ url, nodata: r.nodata }],
         normalize: false,
         interpolate: false,  // show the pixels as they are, not blended
       }),
-      style: { color: ["case", ["==", ["band", 2], 0], [0, 0, 0, 0], viridis] },
+      style: { color: ["case", ["==", ["band", 2], 0], [0, 0, 0, 0], ramp] },
     });
+    // one COG, or a set of tiles that are loaded as they come into view
+    const layer = r.tiles ? new ol.layer.Group({ layers: [], minZoom: r.minZoom ?? 0 }) : cog(r.url);
+    layer.setOpacity(r.opacity ?? 0.75);
+    layer.setVisible(r.visible ?? true);
+    if (r.tiles) loadTiles(layer, r, cog);
     layer.set("raster", r);
     map.addLayer(layer);
 
@@ -134,8 +155,10 @@
     const div = document.createElement("div");
     div.className = "raster";
     const ticks = [0, 1, 2, 3, 4].map((i) => `<span>${+(r.min + (i * (r.max - r.min)) / 4).toFixed(1)}</span>`);
-    div.innerHTML = `<label><input type="checkbox" checked> </label>
-      <div class="bar"></div><div class="ticks">${ticks.join("")}</div>
+    const gradient = colors.map((c) => `rgb(${c.join(",")})`).join(",");
+    div.innerHTML = `<label><input type="checkbox" ${layer.getVisible() ? "checked" : ""}> </label>
+      <div class="bar" style="background: linear-gradient(to right, ${gradient})"></div>
+      <div class="ticks">${ticks.join("")}</div>
       <label>Opacity <input type="range" min="0" max="1" step="0.05" value="${layer.getOpacity()}"></label>`;
     div.querySelector("label").append(`${r.name} (${r.units})`);
     div.querySelector("input[type=checkbox]").onchange = (e) => layer.setVisible(e.target.checked);
@@ -143,21 +166,94 @@
     document.getElementById("raster-layers").append(div);
     return layer;
   }
+  // a tile set: add a tile's layer the first time the tile is in view (zoomed in to minZoom or more)
+  async function loadTiles(group, r, cog) {
+    const tiles = await (await fetch(r.tiles)).json();
+    const view = map.getView();
+    for (const t of tiles) t.extent = ol.proj.transformExtent(t.extent, "EPSG:3310", view.getProjection(), 8);
+    const update = () => {
+      if (!group.getVisible() || view.getZoom() < (r.minZoom ?? 0)) return;
+      const shown = view.calculateExtent(map.getSize());
+      for (const t of tiles) {
+        if (!t.layer && ol.extent.intersects(t.extent, shown)) {
+          t.layer = cog(DATA + t.url, t.extent);
+          group.getLayers().push(t.layer);
+        }
+      }
+    };
+    map.on("moveend", update);
+    group.on("change:visible", update);
+    update();
+  }
+
   const rasterLayers = RASTERS.map(addRaster);
+  // the 3DEP lidar tiles: green = on the NAS, red = to download (missing, damaged or incomplete);
+  // outlines only; read from all_tiles.fgb for the area in view, from zoom 11 in
+  const TILE_STYLES = [
+    new ol.style.Style({ stroke: new ol.style.Stroke({ color: "#00b050", width: 1 }) }),
+    new ol.style.Style({ stroke: new ol.style.Stroke({ color: "#e00000", width: 1.5 }) }),
+  ];
+  const showTiles = [true, true];  // [on the NAS, to download]
+  const geojson = new ol.format.GeoJSON();
+  const tileSource = new ol.source.Vector({
+    strategy: ol.loadingstrategy.bbox,
+    loader: async (extent, resolution, projection, success, failure) => {
+      const [minX, minY, maxX, maxY] = ol.proj.transformExtent(extent, projection, "EPSG:4326");
+      const features = [];
+      try {
+        for await (const f of flatgeobuf.deserialize(DATA + "all_tiles.fgb",{ minX, minY, maxX, maxY })) {
+          const feature = geojson.readFeature(f, { featureProjection: projection });
+          feature.setId(`${f.properties.Campaign}/${f.properties.TileID}`);  // a tile seen twice is added once
+          features.push(feature);
+        }
+      } catch (err) {
+        console.error(err);
+        failure();
+        return;
+      }
+      tileSource.addFeatures(features);
+      success(features);
+    },
+  });
+  const tiles = new ol.layer.Vector({
+    source: tileSource,
+    minZoom: 11,
+    style: (f) => (showTiles[f.get("todo")] ? TILE_STYLES[f.get("todo")] : null),
+  });
+  map.addLayer(tiles);
+  document.getElementById("show-ok").onchange = (e) => { showTiles[0] = e.target.checked; tiles.changed(); };
+  document.getElementById("show-download").onchange = (e) => { showTiles[1] = e.target.checked; tiles.changed(); };
+
   map.addLayer(labels);  // added last so roads and names stay on top of the rasters
 
   // click: the value of each visible raster at that pixel
   const box = document.getElementById("value");
   map.on("singleclick", (e) => {
     box.replaceChildren();
+    // the lidar tiles shown that contain the click
+    if (map.getView().getZoom() >= tiles.getMinZoom()) {
+      for (const f of tileSource.getFeaturesAtCoordinate(e.coordinate)) {
+        if (!showTiles[f.get("todo")]) continue;
+        const line = document.createElement("div");
+        line.textContent = `${f.get("todo") ? "To download" : "On the NAS"}: ${f.get("Campaign")} ` +
+                           `${f.get("TileID")} (${f.get("reason")})`;
+        box.append(line);
+      }
+    }
     for (const layer of rasterLayers) {
       if (!layer.getVisible()) continue;
       const r = layer.get("raster");
-      const d = layer.getData(e.pixel);
+      // a tile set: the value from the tile under the click
+      const parts = layer instanceof ol.layer.Group ? layer.getLayers().getArray() : [layer];
+      let d = null;
+      for (const p of parts) {
+        d = p.getData(e.pixel);
+        if (d && d[1] !== 0) break;
+      }
       const line = document.createElement("div");
       line.textContent = `${r.name}: `;
       const b = document.createElement("b");
-      b.textContent = !d || d[1] === 0 ? "no data" : `${+(d[0] * r.scale).toFixed(1)} ${r.units}`;
+      b.textContent = !d || d[1] === 0 ? "no data" : `${+(d[0] * r.scale + (r.offset ?? 0)).toFixed(1)} ${r.units}`;
       line.append(b);
       box.append(line);
     }
