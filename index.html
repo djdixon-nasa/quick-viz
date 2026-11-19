@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AGB App</title>
+  <title>quick-viz</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10.10.0/ol.css">
   <!-- the GeoTIFF reader and projections: the OpenLayers browser build does not include them -->
   <script src="https://cdn.jsdelivr.net/npm/geotiff@3.1.0-beta.0/dist-browser/geotiff.js"></script>
@@ -42,8 +42,8 @@
 </head>
 <body>
 <div class="side" id="side">
-  <h1>AGB App</h1>
-  <p class="about">Aboveground biomass over NAIP 2022 imagery. Click the map to read values.</p>
+  <h1>quick-viz</h1>
+  <p class="about">Lidar height over NAIP 2022 imagery. Click the map to read values.</p>
 
   <h2>Layers</h2>
   <label><input type="checkbox" id="show-labels" checked> Roads and labels</label>
@@ -57,10 +57,10 @@
   <div id="value">Click the map</div>
 
   <h2>About the data</h2>
-  <p class="about">This is an example of visualizing CTrees biomass data, which are stored as Cloud Optimized
-    GeoTIFFs (COGs) on an AWS S3 bucket. There is no server: the map reads only the parts of the files it
-    needs, straight from the bucket. Hosting data this way costs S3 storage, plus a small charge for the data
-    viewers download. To add more data, put it on an S3 bucket as a COG and add one line to the page.</p>
+  <p class="about">Height above ground from the WERK lidar products, 2013-2023 (ORNL DAAC,
+    doi:10.3334/ORNLDAAC/2523), at 3 m: the tallest 1 m pixel in each 3 x 3 block. The tiles are Cloud
+    Optimized GeoTIFFs (COGs) on Hugging Face. There is no server: the map reads only the parts of the files it
+    needs. The lidar tile outlines show which 3DEP tiles are on the NAS and which need downloading.</p>
 </div>
 <div class="handle" id="handle" title="Drag to resize"></div>
 <div id="map"></div>
@@ -78,7 +78,7 @@
   proj4.defs("EPSG:26911", "+proj=utm +zone=11 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs");
   ol.proj.proj4.register(proj4);
 
-  // raster layers: COGs on S3, or files next to this page (any url that allows range requests).
+  // raster layers: COGs on the web, or files next to this page (any url that allows range requests).
   //   url            the COG's url, or its file name in this folder
   //   scale, offset  value in units = stored value x scale + offset
   //   min, max       the color range, in units
@@ -86,10 +86,6 @@
   //   colors         five colors from min to max (viridis if left out)
   //   visible        false to start with the layer off
   const RASTERS = [
-    { name: "Biomass 2020 (100 m)",
-      url: "https://ctrees-agb-100m-global.s3.us-west-2.amazonaws.com/cogs/" +
-           "global_agb_100m_landsat0024_all_2020_densenet_l1_agb_mosaic_100m_base_cd_ts.tif",
-      scale: 0.1, min: 0, max: 400, units: "Mg/ha", nodata: -9999, opacity: 0.75 },
     // WERK lidar canopy and building height (nDSM), 2013-2023, ORNL DAAC doi:10.3334/ORNLDAAC/2523;
     // 3 m, the tallest 1 m pixel in each 3 x 3 block; stored in 0.5 m steps, 255 = no data
     // 488 tiles, one COG each; tiles.json lists each tile's url and extent (EPSG:3310)
