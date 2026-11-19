@@ -49,6 +49,7 @@
   <label><input type="checkbox" id="show-labels" checked> Roads and labels</label>
   <label><input type="checkbox" id="show-ok" checked> Lidar tiles on the NAS (green, zoom in)</label>
   <label><input type="checkbox" id="show-download" checked> Lidar tiles to download (red, zoom in)</label>
+  <label><input type="checkbox" id="show-flagged" checked> Flagged WERK tiles (white)</label>
   <div class="about" id="tile-status">Tile outlines: zoom in to a city to see them</div>
   <div id="raster-layers"></div>
   <label><input type="checkbox" id="show-naip" checked> NAIP 2022 imagery</label>
@@ -222,6 +223,14 @@
     style: (f) => (showTiles[f.get("todo")] ? TILE_STYLES[f.get("todo")] : null),
   });
   map.addLayer(tiles);
+
+  // the flagged WERK tiles (30 km): white outline, no fill; a small file next to this page
+  const flagged = new ol.layer.Vector({
+    source: new ol.source.Vector({ url: "flagged_werk_tiles.geojson", format: new ol.format.GeoJSON() }),
+    style: new ol.style.Style({ stroke: new ol.style.Stroke({ color: "#ffffff", width: 2 }) }),
+  });
+  map.addLayer(flagged);
+  document.getElementById("show-flagged").onchange = (e) => flagged.setVisible(e.target.checked);
   document.getElementById("show-ok").onchange = (e) => { showTiles[0] = e.target.checked; tiles.changed(); };
   document.getElementById("show-download").onchange = (e) => { showTiles[1] = e.target.checked; tiles.changed(); };
 
@@ -231,6 +240,14 @@
   const box = document.getElementById("value");
   map.on("singleclick", (e) => {
     box.replaceChildren();
+    // the flagged WERK tiles that contain the click
+    if (flagged.getVisible()) {
+      for (const f of flagged.getSource().getFeaturesAtCoordinate(e.coordinate)) {
+        const line = document.createElement("div");
+        line.textContent = `Flagged WERK tile: ${f.get("tile_id")} (${f.get("workunit")}, ${f.get("year")})`;
+        box.append(line);
+      }
+    }
     // the lidar tiles shown that contain the click
     if (map.getView().getZoom() >= tiles.getMinZoom()) {
       for (const f of tileSource.getFeaturesAtCoordinate(e.coordinate)) {
